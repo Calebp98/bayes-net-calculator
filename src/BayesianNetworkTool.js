@@ -103,6 +103,20 @@ const NodeConfigModal = ({ node, onClose, onSave, nodes, edges }) => {
     .filter((edge) => edge.target === node.id)
     .map((edge) => nodes.find((n) => n.id === edge.source));
 
+  const generateCombinations = (parents) => {
+    const combinations = [];
+    const generate = (index, current) => {
+      if (index === parents.length) {
+        combinations.push(current.join(", "));
+        return;
+      }
+      generate(index + 1, [...current, `${parents[index].data.label}=true`]);
+      generate(index + 1, [...current, `${parents[index].data.label}=false`]);
+    };
+    generate(0, []);
+    return combinations;
+  };
+
   const generateProbabilityInputs = () => {
     if (parentNodes.length === 0) {
       return (
@@ -144,20 +158,6 @@ const NodeConfigModal = ({ node, onClose, onSave, nodes, edges }) => {
         />
       </div>
     ));
-  };
-
-  const generateCombinations = (parents) => {
-    const combinations = [];
-    const generate = (index, current) => {
-      if (index === parents.length) {
-        combinations.push(current.join(", "));
-        return;
-      }
-      generate(index + 1, [...current, `${parents[index].data.label}=true`]);
-      generate(index + 1, [...current, `${parents[index].data.label}=false`]);
-    };
-    generate(0, []);
-    return combinations;
   };
 
   const handleSave = () => {
@@ -207,13 +207,14 @@ const BayesianNetworkTool = ({
   initialNodes,
   initialEdges,
   onAddNode,
-  onRunSimulation,
+  onRunCalculation,
 }) => {
   const [nodes, setNodes, onNodesChange] = useNodesState(initialNodes || []);
   const [edges, setEdges, onEdgesChange] = useEdgesState(initialEdges || []);
   const [showModal, setShowModal] = useState(false);
   const [selectedNode, setSelectedNode] = useState(null);
-  const [simulationResult, setSimulationResult] = useState(null);
+  const [calculationResult, setCalculationResult] = useState(null);
+  const [targetNodeLabel, setTargetNodeLabel] = useState("");
 
   const onEditNode = useCallback(
     (nodeId) => {
@@ -290,79 +291,93 @@ const BayesianNetworkTool = ({
     setNodes((nds) => [...nds, newNode]);
   }, [setNodes, onEditNode]);
 
-  const runMonteCarloSimulation = useCallback(() => {
-    if (!nodes || nodes.length === 0 || !edges || edges.length === 0) {
-      console.error("Nodes or edges are not properly initialized");
+  const calculateProbability = useCallback(() => {
+    if (
+      !nodes ||
+      nodes.length === 0 ||
+      !edges ||
+      edges.length === 0 ||
+      !targetNodeLabel
+    ) {
+      console.error(
+        "Nodes, edges, or target node are not properly initialized"
+      );
       return;
     }
 
-    const numSimulations = 100000;
-    let wetCount = 0;
+    const nodeMap = new Map(nodes.map((node) => [node.data.label, node]));
+    const edgeMap = new Map(edges.map((edge) => [edge.target, edge.source]));
 
-    // Map node labels to their respective nodes for quick lookup
-    const labelToNodeMap = {};
-    nodes.forEach((node) => {
-      if (node.data && node.data.label) {
-        labelToNodeMap[node.data.label] = node;
-      }
-    });
-
-    // Function to get the probability of a node being true
-    const getProbability = (label, condition) => {
-      const node = labelToNodeMap[label];
-      if (node && node.data) {
-        if (condition) {
-          return node.data.probabilities[condition] || 0;
-        }
-        return node.data.probabilities.true || 0;
-      }
-      return 0;
+    const getParents = (nodeLabel) => {
+      const node = nodeMap.get(nodeLabel);
+      return node
+        ? edges
+            .filter((edge) => edge.target === node.id)
+            .map(
+              (edge) =>
+                nodeMap.get(nodes.find((n) => n.id === edge.source).data.label)
+                  .data.label
+            )
+        : [];
     };
 
-    // Function to run a single simulation
-    const runSimulation = () => {
-      const state = {};
+    const calculateNodeProbability = (nodeLabel, evidence = {}) => {
+      const node = nodeMap.get(nodeLabel);
+      const parents = getParents(nodeLabel);
 
-      // Simulate each node's state based on its probabilities and parent conditions
-      nodes.forEach((node) => {
-        const { label } = node.data;
-        const parents = edges
-          .filter((edge) => edge.target === node.id)
-          .map((edge) => labelToNodeMap[edge.source]?.data?.label);
-
-        let condition = "";
-        if (parents.length > 0) {
-          condition = parents
-            .map((parent) => `${parent}=${state[parent] ? "true" : "false"}`)
-            .join(", ");
-        }
-
-        const prob = getProbability(label, condition);
-        state[label] = Math.random() < prob;
-      });
-
-      // Check if the specific condition we are interested in is met (e.g., "Grass Wet" is true)
-      if (state["Grass Wet"]) {
-        wetCount++;
+      if (parents.length === 0) {
+        return node.data.probabilities.true;
       }
+
+      let probability = 0;
+      const parentCombinations = generateCombinations(parents);
+
+      for (const combination of parentCombinations) {
+        const conditionProbability = node.data.probabilities[combination] || 0;
+        const parentProbabilities = combination.split(", ").map((cond) => {
+          const [parent, value] = cond.split("=");
+          return value === "true"
+            ? calculateNodeProbability(parent, evidence)
+            : 1 - calculateNodeProbability(parent, evidence);
+        });
+        probability +=
+          conditionProbability * parentProbabilities.reduce((a, b) => a * b, 1);
+      }
+
+      return probability;
     };
 
-    for (let i = 0; i < numSimulations; i++) {
-      runSimulation();
+    const generateCombinations = (parents) => {
+      const combinations = [];
+      const generate = (index, current) => {
+        if (index === parents.length) {
+          combinations.push(current.join(", "));
+          return;
+        }
+        generate(index + 1, [...current, `${parents[index]}=true`]);
+        generate(index + 1, [...current, `${parents[index]}=false`]);
+      };
+      generate(0, []);
+      return combinations;
+    };
+
+    const result = calculateNodeProbability(targetNodeLabel);
+    setCalculationResult(result);
+    console.log(`Probability of ${targetNodeLabel} being true: ${result}`);
+  }, [nodes, edges, targetNodeLabel]);
+
+  useEffect(() => {
+    if (typeof onAddNode === "function") {
+      onAddNode(addNode);
     }
-
-    const probability = wetCount / numSimulations;
-    setSimulationResult(probability);
-  }, [nodes, edges]);
-
-  useEffect(() => {
-    onAddNode.current = addNode;
-    onRunSimulation.current = runMonteCarloSimulation;
-  }, [addNode, runMonteCarloSimulation, onAddNode, onRunSimulation]);
+    if (typeof onRunCalculation === "function") {
+      onRunCalculation(calculateProbability);
+    }
+  }, [addNode, calculateProbability, onAddNode, onRunCalculation]);
 
   useEffect(() => {
-    setNodes(initialNodes);
-    setEdges(initialEdges);
+    setNodes(initialNodes || []);
+    setEdges(initialEdges || []);
   }, [initialNodes, initialEdges]);
 
   return (
@@ -380,11 +395,34 @@ const BayesianNetworkTool = ({
         <MiniMap />
         <Background variant="dots" gap={12} size={1} />
       </ReactFlow>
-      {simulationResult !== null && (
+      <div style={{ position: "absolute", top: 10, left: 10 }}>
+        <label htmlFor="targetNode">Select Target Node for Calculation: </label>
+        <select
+          id="targetNode"
+          onChange={(e) => setTargetNodeLabel(e.target.value)}
+          value={targetNodeLabel}
+        >
+          <option value="" disabled>
+            Select a node
+          </option>
+          {nodes.map((node) => (
+            <option key={node.id} value={node.data.label}>
+              {node.data.label}
+            </option>
+          ))}
+        </select>
+        <button onClick={addNode} style={{ marginLeft: "10px" }}>
+          Add Node
+        </button>
+        <button onClick={calculateProbability} style={{ marginLeft: "10px" }}>
+          Calculate
+        </button>
+      </div>
+      {calculationResult !== null && (
         <div
           style={{
             position: "absolute",
-            top: 10,
+            top: 40,
             left: 10,
             backgroundColor: "white",
             padding: "10px",
@@ -392,7 +430,9 @@ const BayesianNetworkTool = ({
             boxShadow: "0 0 10px rgba(0,0,0,0.1)",
           }}
         >
-          <p>P(Grass Wet) ≈ {simulationResult.toFixed(4)}</p>
+          <p>
+            P({targetNodeLabel}) ≈ {calculationResult.toFixed(4)}
+          </p>
         </div>
       )}
       {showModal && selectedNode && (

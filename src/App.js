@@ -107,39 +107,6 @@ const App = () => {
             </button>
           ))}
         </div>
-        <button
-          onClick={() => onAddNode.current()}
-          style={{
-            backgroundColor: "#4CAF50",
-            border: "none",
-            color: "white",
-            padding: "10px 20px",
-            textAlign: "center",
-            fontSize: "16px",
-            cursor: "pointer",
-            borderRadius: "4px",
-            width: "100%",
-            marginBottom: "10px",
-          }}
-        >
-          Add Node
-        </button>
-        <button
-          onClick={() => onRunSimulation.current()}
-          style={{
-            backgroundColor: "#2196F3",
-            border: "none",
-            color: "white",
-            padding: "10px 20px",
-            textAlign: "center",
-            fontSize: "16px",
-            cursor: "pointer",
-            borderRadius: "4px",
-            width: "100%",
-          }}
-        >
-          Run Simulation
-        </button>
       </div>
       <BayesianNetworkTool
         initialNodes={initialNodes}
