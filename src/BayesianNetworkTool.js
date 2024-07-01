@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useEffect } from "react";
+import React, { useState, useCallback, useEffect, useMemo } from "react";
 import ReactFlow, {
   MiniMap,
   Controls,
@@ -9,6 +9,8 @@ import ReactFlow, {
   MarkerType,
   Handle,
   Position,
+  useReactFlow,
+  ReactFlowProvider,
 } from "reactflow";
 import "reactflow/dist/style.css";
 
@@ -16,13 +18,16 @@ const CustomNode = React.memo(({ id, data }) => {
   const [showTooltip, setShowTooltip] = useState(false);
 
   const displayProbabilities = () => {
-    const { probabilities, label } = data;
+    const { probabilities, label, calculatedProbability } = data;
+    if (calculatedProbability !== undefined) {
+      return `P(${label}) = ${calculatedProbability.toFixed(4)}`;
+    }
     if (Object.keys(probabilities).length === 2 && "true" in probabilities) {
-      return `P(${label}) = ${probabilities.true.toFixed(2)}`;
+      return `P(${label}) = ${probabilities.true.toFixed(4)}`;
     }
     return Object.entries(probabilities)
       .map(
-        ([condition, prob]) => `P(${label}|${condition}) = ${prob.toFixed(2)}`
+        ([condition, prob]) => `P(${label}|${condition}) = ${prob.toFixed(4)}`
       )
       .join("\n");
   };
@@ -43,10 +48,9 @@ const CustomNode = React.memo(({ id, data }) => {
       <Handle type="target" position={Position.Top} id={`${id}-target`} />
       <div style={{ fontWeight: "bold" }}>{data.label}</div>
       <div style={{ fontSize: "0.8em", marginTop: "5px" }}>
-        {Object.keys(data.probabilities).length === 2 &&
-        "true" in data.probabilities
-          ? `P(${data.label}) = ${data.probabilities.true.toFixed(2)}`
-          : "Hover for probabilities"}
+        {data.calculatedProbability !== undefined
+          ? `P(${data.label}) = ${data.calculatedProbability.toFixed(4)}`
+          : "Calculating..."}
       </div>
       <button
         onClick={() => data.onEdit(id)}
@@ -92,118 +96,120 @@ const nodeTypes = {
   custom: CustomNode,
 };
 
-const NodeConfigModal = ({ node, onClose, onSave, nodes, edges }) => {
-  const [name, setName] = useState(node ? node.data.label : "");
-  const [probabilities, setProbabilities] = useState(
-    node ? node.data.probabilities : {}
-  );
-  const [error, setError] = useState("");
+const NodeConfigModal = React.memo(
+  ({ node, onClose, onSave, nodes, edges }) => {
+    const [name, setName] = useState(node ? node.data.label : "");
+    const [probabilities, setProbabilities] = useState(
+      node ? node.data.probabilities : {}
+    );
+    const [error, setError] = useState("");
 
-  const parentNodes = edges
-    .filter((edge) => edge.target === node.id)
-    .map((edge) => nodes.find((n) => n.id === edge.source));
+    const parentNodes = edges
+      .filter((edge) => edge.target === node.id)
+      .map((edge) => nodes.find((n) => n.id === edge.source));
 
-  const generateCombinations = (parents) => {
-    const combinations = [];
-    const generate = (index, current) => {
-      if (index === parents.length) {
-        combinations.push(current.join(", "));
-        return;
-      }
-      generate(index + 1, [...current, `${parents[index].data.label}=true`]);
-      generate(index + 1, [...current, `${parents[index].data.label}=false`]);
+    const generateCombinations = (parents) => {
+      const combinations = [];
+      const generate = (index, current) => {
+        if (index === parents.length) {
+          combinations.push(current.join(", "));
+          return;
+        }
+        generate(index + 1, [...current, `${parents[index].data.label}=true`]);
+        generate(index + 1, [...current, `${parents[index].data.label}=false`]);
+      };
+      generate(0, []);
+      return combinations;
     };
-    generate(0, []);
-    return combinations;
-  };
 
-  const generateProbabilityInputs = () => {
-    if (parentNodes.length === 0) {
-      return (
-        <div>
-          <label>P({name}):</label>
+    const generateProbabilityInputs = () => {
+      if (parentNodes.length === 0) {
+        return (
+          <div>
+            <label>P({name}):</label>
+            <input
+              type="number"
+              value={probabilities.true || 0}
+              onChange={(e) =>
+                setProbabilities({
+                  true: parseFloat(e.target.value),
+                  false: 1 - parseFloat(e.target.value),
+                })
+              }
+              step="0.01"
+              min="0"
+              max="1"
+            />
+          </div>
+        );
+      }
+      const combinations = generateCombinations(parentNodes);
+      return combinations.map((combination, index) => (
+        <div key={index}>
+          <label>
+            P({name} | {combination}):
+          </label>
           <input
             type="number"
-            value={probabilities.true || 0}
-            onChange={(e) =>
-              setProbabilities({
-                true: parseFloat(e.target.value),
-                false: 1 - parseFloat(e.target.value),
-              })
-            }
+            value={probabilities[combination] || 0}
+            onChange={(e) => {
+              const newProbs = { ...probabilities };
+              newProbs[combination] = parseFloat(e.target.value);
+              setProbabilities(newProbs);
+            }}
             step="0.01"
             min="0"
             max="1"
           />
         </div>
-      );
-    }
-    const combinations = generateCombinations(parentNodes);
-    return combinations.map((combination, index) => (
-      <div key={index}>
-        <label>
-          P({name} | {combination}):
-        </label>
+      ));
+    };
+
+    const handleSave = () => {
+      if (!node || !node.id) {
+        setError("Invalid node data. Unable to save changes.");
+        return;
+      }
+      onSave({ id: node.id, name, probabilities });
+      onClose();
+    };
+
+    return (
+      <div
+        style={{
+          position: "fixed",
+          top: "50%",
+          left: "50%",
+          transform: "translate(-50%, -50%)",
+          backgroundColor: "white",
+          padding: "20px",
+          borderRadius: "5px",
+          boxShadow: "0 0 10px rgba(0,0,0,0.1)",
+          zIndex: 1000,
+          maxHeight: "80vh",
+          overflowY: "auto",
+        }}
+      >
+        <h2>Configure Node</h2>
+        {error && <p style={{ color: "red" }}>{error}</p>}
         <input
-          type="number"
-          value={probabilities[combination] || 0}
-          onChange={(e) => {
-            const newProbs = { ...probabilities };
-            newProbs[combination] = parseFloat(e.target.value);
-            setProbabilities(newProbs);
-          }}
-          step="0.01"
-          min="0"
-          max="1"
+          type="text"
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          placeholder="Node Name"
+          style={{ display: "block", marginBottom: "10px" }}
         />
+        <div>{generateProbabilityInputs()}</div>
+        <button onClick={handleSave} style={{ marginRight: "10px" }}>
+          Save
+        </button>
+        <button onClick={onClose}>Cancel</button>
       </div>
-    ));
-  };
+    );
+  }
+);
 
-  const handleSave = () => {
-    if (!node || !node.id) {
-      setError("Invalid node data. Unable to save changes.");
-      return;
-    }
-    onSave({ id: node.id, name, probabilities });
-    onClose();
-  };
-
-  return (
-    <div
-      style={{
-        position: "fixed",
-        top: "50%",
-        left: "50%",
-        transform: "translate(-50%, -50%)",
-        backgroundColor: "white",
-        padding: "20px",
-        borderRadius: "5px",
-        boxShadow: "0 0 10px rgba(0,0,0,0.1)",
-        zIndex: 1000,
-        maxHeight: "80vh",
-        overflowY: "auto",
-      }}
-    >
-      <h2>Configure Node</h2>
-      {error && <p style={{ color: "red" }}>{error}</p>}
-      <input
-        type="text"
-        value={name}
-        onChange={(e) => setName(e.target.value)}
-        placeholder="Node Name"
-        style={{ display: "block", marginBottom: "10px" }}
-      />
-      <div>{generateProbabilityInputs()}</div>
-      <button onClick={handleSave} style={{ marginRight: "10px" }}>
-        Save
-      </button>
-      <button onClick={onClose}>Cancel</button>
-    </div>
-  );
-};
-
-const BayesianNetworkTool = ({
+const BayesianNetworkToolInner = ({
   initialNodes,
   initialEdges,
   onAddNode,
@@ -213,8 +219,7 @@ const BayesianNetworkTool = ({
   const [edges, setEdges, onEdgesChange] = useEdgesState(initialEdges || []);
   const [showModal, setShowModal] = useState(false);
   const [selectedNode, setSelectedNode] = useState(null);
-  const [calculationResult, setCalculationResult] = useState(null);
-  const [targetNodeLabel, setTargetNodeLabel] = useState("");
+  const { project } = useReactFlow();
 
   const onEditNode = useCallback(
     (nodeId) => {
@@ -228,18 +233,6 @@ const BayesianNetworkTool = ({
     },
     [nodes]
   );
-
-  useEffect(() => {
-    setNodes((nds) =>
-      nds.map((node) => ({
-        ...node,
-        data: {
-          ...node.data,
-          onEdit: onEditNode,
-        },
-      }))
-    );
-  }, [setNodes, onEditNode]);
 
   const onConnect = useCallback(
     (params) =>
@@ -267,6 +260,7 @@ const BayesianNetworkTool = ({
                 ...node.data,
                 label: data.name,
                 probabilities: data.probabilities,
+                onEdit: onEditNode,
               },
             };
           }
@@ -274,76 +268,77 @@ const BayesianNetworkTool = ({
         })
       );
     },
-    [setNodes]
+    [setNodes, onEditNode]
   );
 
-  const addNode = useCallback(() => {
-    const newNode = {
-      id: `node_${Date.now()}`,
-      type: "custom",
-      data: {
-        label: "New Node",
-        probabilities: { true: 0.5, false: 0.5 },
-        onEdit: onEditNode,
-      },
-      position: { x: Math.random() * 500, y: Math.random() * 300 },
-    };
-    setNodes((nds) => [...nds, newNode]);
-  }, [setNodes, onEditNode]);
+  const addNode = useCallback(
+    (position) => {
+      const newNode = {
+        id: `node_${Date.now()}`,
+        type: "custom",
+        position,
+        data: {
+          label: "New Node",
+          probabilities: { true: 0.5, false: 0.5 },
+          onEdit: onEditNode,
+        },
+      };
+      setNodes((nds) => [...nds, newNode]);
+      if (typeof onAddNode === "function") {
+        onAddNode(newNode);
+      }
+    },
+    [setNodes, onEditNode, onAddNode]
+  );
 
-  const calculateProbability = useCallback(() => {
-    if (
-      !nodes ||
-      nodes.length === 0 ||
-      !edges ||
-      edges.length === 0 ||
-      !targetNodeLabel
-    ) {
-      console.error(
-        "Nodes, edges, or target node are not properly initialized"
-      );
-      return;
-    }
+  const onPaneClick = useCallback(
+    (event) => {
+      const position = project({ x: event.clientX, y: event.clientY });
+      addNode(position);
+    },
+    [project, addNode]
+  );
 
-    const nodeMap = new Map(nodes.map((node) => [node.data.label, node]));
-    const edgeMap = new Map(edges.map((edge) => [edge.target, edge.source]));
+  const calculateProbabilities = useCallback(() => {
+    const nodeMap = new Map(nodes.map((node) => [node.id, node]));
 
-    const getParents = (nodeLabel) => {
-      const node = nodeMap.get(nodeLabel);
-      return node
-        ? edges
-            .filter((edge) => edge.target === node.id)
-            .map(
-              (edge) =>
-                nodeMap.get(nodes.find((n) => n.id === edge.source).data.label)
-                  .data.label
-            )
-        : [];
+    const getParents = (nodeId) => {
+      return edges
+        .filter((edge) => edge.target === nodeId)
+        .map((edge) => edge.source);
     };
 
-    const calculateNodeProbability = (nodeLabel, evidence = {}) => {
-      const node = nodeMap.get(nodeLabel);
-      const parents = getParents(nodeLabel);
+    const calculateNodeProbability = (nodeId, cache = new Map()) => {
+      if (cache.has(nodeId)) {
+        return cache.get(nodeId);
+      }
+
+      const node = nodeMap.get(nodeId);
+      const parents = getParents(nodeId);
 
       if (parents.length === 0) {
-        return node.data.probabilities.true;
+        const prob = node.data.probabilities.true;
+        cache.set(nodeId, prob);
+        return prob;
       }
 
       let probability = 0;
       const parentCombinations = generateCombinations(parents);
 
       for (const combination of parentCombinations) {
-        const conditionProbability = node.data.probabilities[combination] || 0;
-        const parentProbabilities = combination.split(", ").map((cond) => {
-          const [parent, value] = cond.split("=");
-          return value === "true"
-            ? calculateNodeProbability(parent, evidence)
-            : 1 - calculateNodeProbability(parent, evidence);
+        const conditionKey = combination
+          .map(([id, value]) => `${nodeMap.get(id).data.label}=${value}`)
+          .join(", ");
+        const conditionProbability = node.data.probabilities[conditionKey] || 0;
+        const parentProbabilities = combination.map(([id, value]) => {
+          const parentProb = calculateNodeProbability(id, cache);
+          return value === "true" ? parentProb : 1 - parentProb;
         });
         probability +=
           conditionProbability * parentProbabilities.reduce((a, b) => a * b, 1);
       }
 
+      cache.set(nodeId, probability);
       return probability;
     };
 
@@ -351,43 +346,62 @@ const BayesianNetworkTool = ({
       const combinations = [];
       const generate = (index, current) => {
         if (index === parents.length) {
-          combinations.push(current.join(", "));
+          combinations.push(current);
           return;
         }
-        generate(index + 1, [...current, `${parents[index]}=true`]);
-        generate(index + 1, [...current, `${parents[index]}=false`]);
+        generate(index + 1, [...current, [parents[index], "true"]]);
+        generate(index + 1, [...current, [parents[index], "false"]]);
       };
       generate(0, []);
       return combinations;
     };
 
-    const result = calculateNodeProbability(targetNodeLabel);
-    setCalculationResult(result);
-    console.log(`Probability of ${targetNodeLabel} being true: ${result}`);
-  }, [nodes, edges, targetNodeLabel]);
+    const updatedNodes = nodes.map((node) => ({
+      ...node,
+      data: {
+        ...node.data,
+        calculatedProbability: calculateNodeProbability(node.id),
+        onEdit: onEditNode,
+      },
+    }));
+
+    setNodes(updatedNodes);
+
+    if (typeof onRunCalculation === "function") {
+      onRunCalculation(updatedNodes);
+    }
+  }, [nodes, edges, setNodes, onRunCalculation, onEditNode]);
 
   useEffect(() => {
-    if (typeof onAddNode === "function") {
-      onAddNode(addNode);
-    }
-    if (typeof onRunCalculation === "function") {
-      onRunCalculation(calculateProbability);
-    }
-  }, [addNode, calculateProbability, onAddNode, onRunCalculation]);
+    setNodes((nds) =>
+      nds.map((node) => ({
+        ...node,
+        data: {
+          ...node.data,
+          onEdit: onEditNode,
+        },
+      }))
+    );
+  }, [setNodes, onEditNode]);
+
+  useEffect(() => {
+    calculateProbabilities();
+  }, [calculateProbabilities]);
 
   useEffect(() => {
     setNodes(initialNodes || []);
     setEdges(initialEdges || []);
   }, [initialNodes, initialEdges]);
 
-  return (
-    <div style={{ width: "100vw", height: "100vh" }}>
+  const memoizedReactFlow = useMemo(
+    () => (
       <ReactFlow
         nodes={nodes}
         edges={edges}
         onNodesChange={onNodesChange}
         onEdgesChange={onEdgesChange}
         onConnect={onConnect}
+        onPaneClick={onPaneClick}
         nodeTypes={nodeTypes}
         fitView
       >
@@ -395,46 +409,32 @@ const BayesianNetworkTool = ({
         <MiniMap />
         <Background variant="dots" gap={12} size={1} />
       </ReactFlow>
-      <div style={{ position: "absolute", top: 10, left: 10 }}>
-        <label htmlFor="targetNode">Select Target Node for Calculation: </label>
-        <select
-          id="targetNode"
-          onChange={(e) => setTargetNodeLabel(e.target.value)}
-          value={targetNodeLabel}
-        >
-          <option value="" disabled>
-            Select a node
-          </option>
-          {nodes.map((node) => (
-            <option key={node.id} value={node.data.label}>
-              {node.data.label}
-            </option>
-          ))}
-        </select>
-        <button onClick={addNode} style={{ marginLeft: "10px" }}>
-          Add Node
-        </button>
-        <button onClick={calculateProbability} style={{ marginLeft: "10px" }}>
-          Calculate
-        </button>
+    ),
+    [nodes, edges, onNodesChange, onEdgesChange, onConnect, onPaneClick]
+  );
+
+  return (
+    <div style={{ width: "100vw", height: "100vh", position: "relative" }}>
+      {memoizedReactFlow}
+      <div
+        style={{
+          position: "absolute",
+          top: 10,
+          left: 10,
+          background: "white",
+          padding: "10px",
+          borderRadius: "5px",
+          boxShadow: "0 0 10px rgba(0,0,0,0.1)",
+        }}
+      >
+        <h3>Instructions:</h3>
+        <ul>
+          <li>Click on the canvas to add a new node</li>
+          <li>Drag between nodes to create edges</li>
+          <li>Click 'Edit' on a node to configure probabilities</li>
+          <li>Probabilities are automatically calculated</li>
+        </ul>
       </div>
-      {calculationResult !== null && (
-        <div
-          style={{
-            position: "absolute",
-            top: 40,
-            left: 10,
-            backgroundColor: "white",
-            padding: "10px",
-            borderRadius: "5px",
-            boxShadow: "0 0 10px rgba(0,0,0,0.1)",
-          }}
-        >
-          <p>
-            P({targetNodeLabel}) ≈ {calculationResult.toFixed(4)}
-          </p>
-        </div>
-      )}
       {showModal && selectedNode && (
         <NodeConfigModal
           node={selectedNode}
@@ -450,5 +450,11 @@ const BayesianNetworkTool = ({
     </div>
   );
 };
+
+const BayesianNetworkTool = (props) => (
+  <ReactFlowProvider>
+    <BayesianNetworkToolInner {...props} />
+  </ReactFlowProvider>
+);
 
 export default BayesianNetworkTool;

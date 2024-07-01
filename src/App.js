@@ -14,7 +14,7 @@ const App = () => {
 
   const testCases = [
     {
-      name: "Test Case 1",
+      name: "Wet Grass Example",
       nodes: [
         {
           id: "1",
