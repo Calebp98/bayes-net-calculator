@@ -219,6 +219,8 @@ const BayesianNetworkToolInner = ({
   const [edges, setEdges, onEdgesChange] = useEdgesState(initialEdges || []);
   const [showModal, setShowModal] = useState(false);
   const [selectedNode, setSelectedNode] = useState(null);
+  const [jsonInput, setJsonInput] = useState("");
+  const [showJsonModal, setShowJsonModal] = useState(false);
   const { project } = useReactFlow();
 
   const onEditNode = useCallback(
@@ -372,6 +374,57 @@ const BayesianNetworkToolInner = ({
     }
   }, [nodes, edges, setNodes, onRunCalculation, onEditNode]);
 
+  const exportToJson = useCallback(() => {
+    const graphData = {
+      nodes: nodes.map(({ id, position, data }) => ({
+        id,
+        position,
+        data: {
+          label: data.label,
+          probabilities: data.probabilities,
+          calculatedProbability: data.calculatedProbability,
+        },
+      })),
+      edges: edges,
+    };
+    const jsonString = JSON.stringify(graphData, null, 2);
+    navigator.clipboard
+      .writeText(jsonString)
+      .then(() => {
+        alert("Graph data copied to clipboard!");
+      })
+      .catch((err) => {
+        console.error("Failed to copy: ", err);
+      });
+  }, [nodes, edges]);
+
+  const importFromJson = useCallback(() => {
+    try {
+      const graphData = JSON.parse(jsonInput);
+      if (graphData.nodes && graphData.edges) {
+        setNodes(
+          graphData.nodes.map((node) => ({
+            ...node,
+            type: "custom", // Ensure the node type is set to "custom"
+            data: {
+              ...node.data,
+              onEdit: onEditNode,
+              calculatedProbability:
+                node.data.calculatedProbability || undefined,
+            },
+          }))
+        );
+        setEdges(graphData.edges);
+        setShowJsonModal(false);
+        setJsonInput("");
+      } else {
+        throw new Error("Invalid JSON structure");
+      }
+    } catch (error) {
+      alert("Invalid JSON data. Please check the format and try again.");
+    }
+  }, [jsonInput, setNodes, setEdges, onEditNode]);
+
   useEffect(() => {
     setNodes((nds) =>
       nds.map((node) => ({
@@ -434,6 +487,12 @@ const BayesianNetworkToolInner = ({
           <li>Click 'Edit' on a node to configure probabilities</li>
           <li>Probabilities are automatically calculated</li>
         </ul>
+        <button onClick={exportToJson} style={{ marginRight: "10px" }}>
+          Copy Graph to Clipboard
+        </button>
+        <button onClick={() => setShowJsonModal(true)}>
+          Import Graph from JSON
+        </button>
       </div>
       {showModal && selectedNode && (
         <NodeConfigModal
@@ -446,6 +505,33 @@ const BayesianNetworkToolInner = ({
           }}
           onSave={onSaveNode}
         />
+      )}
+      {showJsonModal && (
+        <div
+          style={{
+            position: "fixed",
+            top: "50%",
+            left: "50%",
+            transform: "translate(-50%, -50%)",
+            backgroundColor: "white",
+            padding: "20px",
+            borderRadius: "5px",
+            boxShadow: "0 0 10px rgba(0,0,0,0.1)",
+            zIndex: 1000,
+          }}
+        >
+          <h3>Import Graph from JSON</h3>
+          <textarea
+            value={jsonInput}
+            onChange={(e) => setJsonInput(e.target.value)}
+            style={{ width: "100%", height: "200px", marginBottom: "10px" }}
+            placeholder="Paste your JSON here"
+          />
+          <button onClick={importFromJson} style={{ marginRight: "10px" }}>
+            Import
+          </button>
+          <button onClick={() => setShowJsonModal(false)}>Cancel</button>
+        </div>
       )}
     </div>
   );
